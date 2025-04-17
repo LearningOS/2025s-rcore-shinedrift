@@ -14,7 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
@@ -54,6 +54,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_syscall_num: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +136,30 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    // syscall_num_inc
+    fn syscall_num_inc(&self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        if id <= MAX_SYSCALL_NUM {
+            inner.tasks[current].task_syscall_num[id] += 1;
+        }
+    }
+
+    fn get_syscall_times(&self, id: usize) -> u8{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_num[id]
+    }
+}
+
+/// increase num_syscall[id]
+pub fn syscall_num_inc(id: usize) {
+    TASK_MANAGER.syscall_num_inc(id);
+}
+
+/// Get the number of times the syscall with call number id is used.
+pub fn get_syscall_times(id: usize) -> u8{
+    TASK_MANAGER.get_syscall_times(id)
 }
 
 /// Run the first task in task list.
