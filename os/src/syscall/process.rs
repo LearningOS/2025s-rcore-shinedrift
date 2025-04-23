@@ -1,7 +1,12 @@
 //! Process management syscalls
-use crate::task::{change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, current_user_token};
+
+use crate::config::MEMORY_END;
+use crate::task::{get_syscall_times, change_program_brk, exit_current_and_run_next, 
+                    suspend_current_and_run_next, current_user_token, map_new_area, 
+                    munmap_used_area};
 use crate::timer::get_time_us;
-use crate::mm::translated_byte_buffer;
+use crate::mm::{copy_to_user, read_virtaddr, write_virtaddr, MapPermission};
+use crate::mm::{VPNRange, VirtAddr, PageTable};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -22,28 +27,6 @@ pub fn sys_yield() -> isize {
     trace!("kernel: sys_yield");
     suspend_current_and_run_next();
     0
-}
-
-pub fn copy_to_user(user_token: usize, user_ptr: *mut u8, kernel_src: *const u8, len: usize) -> Result<(), ()> {
-    let mut buffers = translated_byte_buffer(user_token, user_ptr, len);
-    let mut offset = 0;
-
-    for buf in buffers.iter_mut() {
-        let copy_len = core::cmp::min(buf.len(), len - offset);
-        if len == 0 || copy_len == 0 {
-            return Err(());
-        }
-        unsafe {
-            core::ptr::copy_nonoverlapping(kernel_src.add(offset), buf.as_mut_ptr(), copy_len);
-        }
-        offset += copy_len;
-    }
-
-    if offset == len {
-        Ok(())
-    } else {
-        Err(())
-    }
 }
 
 /// YOUR JOB: get time with second and microsecond
@@ -70,21 +53,97 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 
 /// TODO: Finish sys_trace to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
-pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
+pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
     trace!("kernel: sys_trace");
-    -1
+    if id > MEMORY_END {
+        return  -1;
+    }
+    match trace_request {
+        // _trace_request = 0, 获取当前任务id地址处一个字节的无符号整数值
+        0 => {
+            let addr = id as usize;
+            let cur_token = current_user_token();
+            match read_virtaddr(cur_token, addr) {
+                Ok(val) => return val,
+                Err(()) => return -1 as isize,
+            };           
+        },
+        // _trace_request = 1, 将data写入到id对应地址处
+        1 => {
+            let addr = id as usize;
+            let cur_token = current_user_token();
+            match write_virtaddr(cur_token, addr, data as u8) {
+                Ok(()) => 0 as isize,
+                Err(()) => -1 as isize,
+            }
+        },
+    // _trace_request = 2, 查询编号为id的系统调用的调用次数
+        2 => {
+            get_syscall_times(id) as isize
+        },
+        _ => -1, 
+    }
 }
 
 // YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+    let start_va = VirtAddr(start);
+    if !start_va.aligned() {
+        return -1;
+    }
+    if len <= 0 {
+        return -1;
+    }
+    if (prot & !0x7 != 0) || (prot & 0x7 == 0) {
+        return -1;
+    }
+    // len按页向上取整
+    let start_va = VirtAddr(start).floor();
+    let end_va = VirtAddr(start + len).ceil();
+    let pgtb  = PageTable::from_token(current_user_token());
+
+    // 检查虚拟地址是否已经被映射
+    let vpns = VPNRange::new(start_va, end_va);
+    for vpn in vpns {
+        if let Some(pte) = pgtb.translate(vpn) {
+            if pte.is_valid() {
+                return -1;
+            }
+        }
+    };
+
+    // 构造permission: MapPermission
+    let mut perm: MapPermission = MapPermission::U;
+    if prot & 0x1 != 0 {
+        perm |= MapPermission::R;
+    }
+    if prot & 0x2 != 0 {
+        perm |= MapPermission::W;
+    }
+    if prot & 0x4 != 0 {
+        perm |= MapPermission::X;
+    }
+    // 完成虚拟地址到物理地址的映射
+    map_new_area(start_va.into(), end_va.into(), perm);
+    0
 }
 
 // YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
+pub fn sys_munmap(start: usize, len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    // 处理参数，获取需要取消映射的区间
+    let start_va = VirtAddr(start);
+    if !start_va.aligned() {
+        return -1;
+    }
+    if len <= 0 {
+        return -1;
+    }
+    let start_vpn = start_va.floor();
+    let end_vpn = VirtAddr(start + len).ceil();
+    // munmap_used_area的实现参考了荣誉准则标注的内容
+    munmap_used_area(start_vpn.into(), end_vpn.into())
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
