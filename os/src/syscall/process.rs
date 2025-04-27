@@ -6,7 +6,7 @@ use crate::{
     mm::{translated_refmut, translated_str, translated_byte_buffer},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, 
+        suspend_current_and_run_next, TaskControlBlock
     },
     timer::get_time_us,
     mm::{MapPermission, VPNRange, VirtAddr, PageTable}
@@ -228,19 +228,41 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+/// 根据path对应程序，初始化一个进程(#242, 243)
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    let Some(data) = get_app_data_by_name(path.as_str()) else {
+        return -1;
+    };
+    let task_control_block = Arc::new(TaskControlBlock::new(&data));
+    add_task(task_control_block.clone());
+    let Some(current) = current_task() else {
+        return -1;
+    };
+
+    {
+        current.inner_exclusive_access().children.push(task_control_block.clone());
+    }
+    let pid = task_control_block.getpid();
+    debug!("kernel: sys_spawn pid: {}, current: {}", pid, current.pid.0);
+    pid as isize 
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let current_task = current_task().unwrap();
+    if prio >= 2 {
+        current_task.set_priority(prio)
+    } else {
+        return -1;
+    }
 }

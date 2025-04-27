@@ -21,7 +21,7 @@ pub struct TaskControlBlock {
     pub kernel_stack: KernelStack,
 
     /// Mutable
-    inner: UPSafeCell<TaskControlBlockInner>,
+    pub inner: UPSafeCell<TaskControlBlockInner>,
 }
 
 impl TaskControlBlock {
@@ -68,6 +68,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Process priority
+    pub priority: isize,
+
+    /// Value of stride
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +124,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         };
@@ -191,6 +199,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         });
@@ -247,6 +257,13 @@ impl TaskControlBlock {
     pub fn munmap(&self, start_va: VirtAddr, end_va: VirtAddr) -> isize {
         let mut inner = self.inner_exclusive_access();
         inner.memory_set.remove_framed_area(start_va, end_va)
+    }
+
+    /// set priority
+    pub fn set_priority(&self, prio: isize) -> isize {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio;
+        prio
     }
 }
 
